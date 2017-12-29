@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Threading.Tasks;
 
 namespace ZipFile
 {
@@ -17,6 +18,7 @@ namespace ZipFile
 
 				var watchDeflat = Stopwatch.StartNew();
 				var compressedDeflat = CompressDeflat(data);
+				var decompressedDeflat = DecompressDeflat(compressedDeflat);
 				watchDeflat.Stop();
 
 				var watchGZip = Stopwatch.StartNew();
@@ -27,8 +29,9 @@ namespace ZipFile
 				var compressLZMA = CompressFileLZMA(data);
 				watchLZMA.Stop();
 
+				var original = data.Length;
 				//Console.WriteLine(file.Remove(0, 9));
-				Console.WriteLine("OriginalSize {0}", data.Length / 1024);
+				Console.WriteLine("OriginalSize {0}", original / 1024);
 				Console.WriteLine("CompressDeflat {0} {1}", compressedDeflat.Length / 1024, watchDeflat.ElapsedMilliseconds);
 				Console.WriteLine("compressGZip {0} {1}", compressGZip.Length / 1024, watchGZip.ElapsedMilliseconds);
 				Console.WriteLine("compressLZMA {0} {1}", compressLZMA.Length / 1024, watchLZMA.ElapsedMilliseconds);
@@ -49,7 +52,18 @@ namespace ZipFile
 				{
 					dstream.Write(data, 0, data.Length);
 				}
-				output.Flush();
+				return output.ToArray();
+			}
+		}
+
+		public static async Task<byte[]> CompressDeflatAsync(byte[] data)
+		{
+			using (MemoryStream output = new MemoryStream())
+			{
+				using (DeflateStream dstream = new DeflateStream(output, CompressionLevel.Optimal))
+				{
+					await dstream.WriteAsync(data, 0, data.Length);
+				}
 				return output.ToArray();
 			}
 		}
@@ -69,25 +83,47 @@ namespace ZipFile
 			}
 		}
 
+		public static async Task<byte[]> DecompressDeflatAsync(byte[] data)
+		{
+			using (MemoryStream input = new MemoryStream(data))
+			{
+				using (DeflateStream dstream = new DeflateStream(input, CompressionMode.Decompress))
+				{
+					using (MemoryStream output = new MemoryStream())
+					{
+						await dstream.CopyToAsync(output);
+						return output.ToArray();
+					}
+				}
+			}
+		}
+
 		public static byte[] CompressGZip(byte[] data)
 		{
-			MemoryStream output = new MemoryStream();
-			using (GZipStream dstream = new GZipStream(output, CompressionLevel.Optimal))
+			using (var output = new MemoryStream())
 			{
-				dstream.Write(data, 0, data.Length);
+				using (var dstream = new GZipStream(output, CompressionLevel.Optimal))
+				{
+					dstream.Write(data, 0, data.Length);
+				}
+				return output.ToArray();
 			}
-			return output.ToArray();
 		}
 
 		public static byte[] DecompressGZip(byte[] data)
 		{
-			MemoryStream input = new MemoryStream(data);
-			MemoryStream output = new MemoryStream();
-			using (GZipStream dstream = new GZipStream(input, CompressionMode.Decompress))
+			using (var input = new MemoryStream(data))
 			{
-				dstream.CopyTo(output);
+				using (var output = new MemoryStream())
+				{
+					using (GZipStream dstream = new GZipStream(input, CompressionMode.Decompress))
+					{
+						dstream.CopyTo(output);
+					}
+
+					return output.ToArray();
+				}
 			}
-			return output.ToArray();
 		}
 
 		private static byte[] CompressFileLZMA(byte[] data)
@@ -95,47 +131,48 @@ namespace ZipFile
 			// https://stackoverflow.com/questions/7646328/how-to-use-the-7z-sdk-to-compress-and-decompress-a-file
 			SevenZip.Compression.LZMA.Encoder coder = new SevenZip.Compression.LZMA.Encoder();
 
-			MemoryStream input = new MemoryStream(data);
-			MemoryStream output = new MemoryStream();
-			//FileStream output = new FileStream(outFile, FileMode.Create);
+			using (var input = new MemoryStream(data))
+			{
+				using (var output = new MemoryStream())
+				{
+					//FileStream output = new FileStream(outFile, FileMode.Create);
 
-			// Write the encoder properties
-			coder.WriteCoderProperties(output);
+					// Write the encoder properties
+					coder.WriteCoderProperties(output);
 
-			// Write the decompressed file size.
-			output.Write(BitConverter.GetBytes(input.Length), 0, 8);
+					// Write the decompressed file size.
+					output.Write(BitConverter.GetBytes(input.Length), 0, 8);
 
-			// Encode the file.
-			coder.Code(input, output, input.Length, -1, null);
-
-
-			//	output.Flush();
-			//output.Close();
-
-			return output.ToArray();
+					// Encode the file.
+					coder.Code(input, output, input.Length, -1, null);
+					return output.ToArray();
+				}
+			}
 		}
 
 		private static byte[] DecompressFileLZMA(byte[] data)
 		{
 			SevenZip.Compression.LZMA.Decoder coder = new SevenZip.Compression.LZMA.Decoder();
-			MemoryStream input = new MemoryStream(data);
-			MemoryStream output = new MemoryStream();
+			using (var input = new MemoryStream(data))
+			{
+				using (var output = new MemoryStream())
+				{
 
-			// Read the decoder properties
-			byte[] properties = new byte[5];
-			input.Read(properties, 0, 5);
+					// Read the decoder properties
+					byte[] properties = new byte[5];
+					input.Read(properties, 0, 5);
 
-			// Read in the decompress file size.
-			byte[] fileLengthBytes = new byte[8];
-			input.Read(fileLengthBytes, 0, 8);
-			long fileLength = BitConverter.ToInt64(fileLengthBytes, 0);
+					// Read in the decompress file size.
+					byte[] fileLengthBytes = new byte[8];
+					input.Read(fileLengthBytes, 0, 8);
+					long fileLength = BitConverter.ToInt64(fileLengthBytes, 0);
 
-			coder.SetDecoderProperties(properties);
-			coder.Code(input, output, input.Length, fileLength, null);
-			//output.Flush();
-			//output.Close();
+					coder.SetDecoderProperties(properties);
+					coder.Code(input, output, input.Length, fileLength, null);
 
-			return output.ToArray();
+					return output.ToArray();
+				}
+			}
 		}
 	}
 }
